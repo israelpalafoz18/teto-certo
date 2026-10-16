@@ -88,6 +88,27 @@ COR_BAIXA = "#EA3943"
 # Ordem fixa de cores categóricas (validada para daltonismo em fundo escuro)
 CORES_ALOCACAO = ["#3987E5", "#D95926", "#199E70", "#C98500", "#D55181", "#9085E9"]
 
+# Ativo de referência (cotado na B3) que representa cada classe da alocação.
+# Clique numa classe para ver a cotação dela no gráfico ao lado.
+ATIVO_CLASSE = {
+    "Renda Fixa Pós (CDI/Selic)": {"ticker": "LFTS11.SA", "nome": "LFTS11 · ETF Tesouro Selic", "pontos": False},
+    "Tesouro IPCA+": {"ticker": "IB5M11.SA", "nome": "IB5M11 · ETF IMA-B 5+ (Tesouro IPCA+)", "pontos": False},
+    "Renda Fixa Prefixada": {"ticker": "IRFM11.SA", "nome": "IRFM11 · ETF IRF-M (prefixados)", "pontos": False},
+    "Fundos Imobiliários": {"ticker": "XFIX11.SA", "nome": "XFIX11 · ETF de FIIs (IFIX)", "pontos": False},
+    "Ações Brasil": {"ticker": "^BVSP", "nome": "Ibovespa", "pontos": True},
+    "Internacional": {"ticker": "IVVB11.SA", "nome": "IVVB11 · S&P 500 em reais", "pontos": False},
+}
+CLASSES = list(ATIVO_CLASSE.keys())
+CLASSE_PADRAO = "Ações Brasil"
+
+PERIODOS = {
+    "Hoje": {"period": "5d", "interval": "5m", "intradia": True},
+    "1 mês": {"period": "1mo", "interval": "1d", "intradia": False},
+    "6 meses": {"period": "6mo", "interval": "1d", "intradia": False},
+    "1 ano": {"period": "1y", "interval": "1d", "intradia": False},
+}
+ATUALIZACAO_GRAFICO = 60  # segundos entre atualizações automáticas do gráfico
+
 FONTE = "Inter, 'Segoe UI', Roboto, sans-serif"
 
 # ---------------------------------------------------------------------------
@@ -155,6 +176,33 @@ st.markdown(
                                           font-weight: 600; height: 42px; }}
     .stButton > button[kind="primary"]:hover {{ background: #4A95EC; }}
 
+
+    /* Legenda clicável da alocação */
+    [class*="st-key-classe_"] button {{ width: 100%; justify-content: flex-start; background: transparent;
+        border: 1px solid transparent; border-bottom: 1px solid {COR_BORDA}; border-radius: 6px;
+        padding: 6px 8px 6px 28px; min-height: 36px; position: relative; color: {COR_TEXTO}; }}
+    [class*="st-key-classe_"] button:hover {{ background: #161C26; border-color: {COR_BORDA}; color: {COR_TEXTO}; }}
+    [class*="st-key-classe_"] button * {{ justify-content: flex-start !important; text-align: left !important; }}
+    [class*="st-key-classe_"] button > div {{ width: 100%; }}
+    [class*="st-key-classe_"] button p {{ font-size: 13px; width: 100%; text-align: left; white-space: normal;
+        overflow: visible; text-overflow: clip; line-height: 1.3; }}
+    [class*="st-key-classe_"] {{ margin-bottom: -10px; }}
+    [class*="st-key-classe_"] button::before {{ content: ""; position: absolute; left: 9px; top: 50%;
+        transform: translateY(-50%); width: 10px; height: 10px; border-radius: 3px; background: var(--cor); }}
+    [class*="st-key-classe_"] button[kind="primary"] {{ background: #172235; border: 1px solid {COR_DESTAQUE}; height: auto; }}
+    [class*="st-key-classe_"] button[kind="primary"]:hover {{ background: #1B2940; }}
+    .st-key-classe_0 button {{ --cor: #3987E5; }}
+    .st-key-classe_1 button {{ --cor: #D95926; }}
+    .st-key-classe_2 button {{ --cor: #199E70; }}
+    .st-key-classe_3 button {{ --cor: #C98500; }}
+    .st-key-classe_4 button {{ --cor: #D55181; }}
+    .st-key-classe_5 button {{ --cor: #9085E9; }}
+    .ativo-preco {{ font-size: 22px; font-weight: 700; color: {COR_TEXTO}; font-variant-numeric: tabular-nums; }}
+    .ativo-linha {{ display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 2px 0 0 0; }}
+    .ativo-delta {{ font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }}
+    .ativo-delta.alta {{ color: {COR_ALTA}; }} .ativo-delta.baixa {{ color: {COR_BAIXA}; }}
+    .ativo-delta.neutra {{ color: {COR_TEXTO_2}; }}
+    .ativo-ref {{ font-size: 11.5px; color: {COR_TEXTO_3}; }}
     .nota {{ font-size: 11.5px; color: {COR_TEXTO_3}; margin-top: 6px; }}
     </style>
     """,
@@ -305,19 +353,34 @@ def buscar_ipca_12m():
         return {"ok": False, "valor": FALLBACK_IPCA_12M, "data": None, "fonte": FALLBACK_REF, "erro": str(exc)}
 
 
-@st.cache_data(ttl=CACHE_TTL * 5, show_spinner=False)
-def buscar_historico_ibov():
-    """Fechamentos diários do Ibovespa nos últimos 12 meses."""
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def buscar_historico(ticker, periodo):
+    """Série de fechamentos do ativo no período escolhido (intradiário em 'Hoje')."""
+    cfg = PERIODOS[periodo]
     try:
-        hist = yf.Ticker(TICKER_IBOV).history(period="1y", interval="1d", auto_adjust=False)
+        hist = yf.Ticker(ticker).history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False)
         hist = hist.dropna(subset=["Close"])
         if hist.empty:
-            return {"ok": False, "erro": "Histórico do Ibovespa veio vazio."}
+            return {"ok": False, "erro": f"Sem cotações de {ticker} para o período."}
         serie = hist["Close"].copy()
-        serie.index = serie.index.tz_localize(None) if serie.index.tz is not None else serie.index
-        return {"ok": True, "serie": serie}
+        if serie.index.tz is not None:
+            serie.index = serie.index.tz_convert(TZ).tz_localize(None)
+        aviso = None
+        if cfg["intradia"]:
+            ultimo_dia = serie.index[-1].date()
+            serie = serie[serie.index.date == ultimo_dia]
+        else:
+            # O Yahoo às vezes traz saltos impossíveis (>20% num dia) em ETFs de renda fixa.
+            # Nesses casos o gráfico começa depois do último salto.
+            saltos = serie.pct_change().abs()
+            saltos = saltos[saltos > 0.20]
+            if not saltos.empty:
+                corte = saltos.index[-1]
+                serie = serie[serie.index >= corte]
+                aviso = f"Histórico exibido a partir de {corte.strftime('%d/%m/%Y')}: dados anteriores do Yahoo Finance vieram com falhas."
+        return {"ok": True, "serie": serie, "aviso": aviso}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "erro": f"Falha ao obter histórico do Ibovespa: {exc}"}
+        return {"ok": False, "erro": f"Falha ao obter cotações de {ticker}: {exc}"}
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -411,43 +474,83 @@ def layout_base(fig, altura):
     return fig
 
 
-def grafico_alocacao(perfil):
+def hex_rgba(cor, alfa):
+    cor = cor.lstrip("#")
+    r, g, b = (int(cor[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alfa})"
+
+
+def grafico_alocacao(perfil, selecionada):
+    """Rosca da alocação feita de pontos bem juntos: assim cada fatia aceita clique no Streamlit."""
+    import math
+
     pesos = PERFIS[perfil]
-    fig = go.Figure(
-        go.Pie(
-            labels=list(pesos.keys()),
-            values=list(pesos.values()),
-            hole=0.68,
-            sort=False,
-            direction="clockwise",
-            marker=dict(colors=CORES_ALOCACAO, line=dict(color=COR_PAINEL, width=2)),
-            textinfo="none",
-            hovertemplate="<b>%{label}</b><br>%{value}% da carteira<extra></extra>",
+    classes = list(pesos.keys())
+    total = sum(pesos.values())
+    limites, acumulado = [], 0.0
+    for classe in classes:
+        inicio = acumulado
+        acumulado += pesos[classe] / total * 360
+        limites.append((classe, inicio, acumulado))
+
+    fig = go.Figure()
+    for i, (classe, inicio, fim) in enumerate(limites):
+        if fim - inicio <= 0:
+            continue
+        ativa = classe == selecionada
+        r_ext = 1.08 if ativa else 1.0
+        xs, ys = [], []
+        raios = [0.64 + k * (r_ext - 0.64) / 8 for k in range(9)]
+        passo = 1.4
+        ang = inicio + 1.6  # pequeno vão entre fatias
+        while ang <= fim - 1.6:
+            rad = math.radians(90 - ang)
+            for r in raios:
+                xs.append(r * math.cos(rad))
+                ys.append(r * math.sin(rad))
+            ang += passo
+        opacidade = 1 if ativa else 0.35
+        fig.add_trace(
+            go.Scatter(
+                x=xs, y=ys, mode="markers", name=classe,
+                marker=dict(color=CORES_ALOCACAO[i], opacity=opacidade, size=6, symbol="square", line=dict(width=0)),
+                customdata=[[classe, pesos[classe]]] * len(xs),
+                hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}% da carteira"
+                              "<br><i>Clique para ver a cotação</i><extra></extra>",
+                selected=dict(marker=dict(opacity=opacidade)),
+                unselected=dict(marker=dict(opacity=opacidade)),
+            )
         )
-    )
     layout_base(fig, 300)
+    eixo = dict(visible=False, range=[-1.2, 1.2], fixedrange=True)
     fig.update_layout(
         showlegend=False,
+        dragmode=False,
+        xaxis=dict(eixo, scaleanchor="y", scaleratio=1),
+        yaxis=eixo,
         annotations=[
-            dict(text="PERFIL", x=0.5, y=0.57, showarrow=False, font=dict(size=11, color=COR_TEXTO_3)),
-            dict(text=f"<b>{perfil}</b>", x=0.5, y=0.45, showarrow=False, font=dict(size=18, color=COR_TEXTO)),
+            dict(text="PERFIL", x=0, y=0.16, showarrow=False, font=dict(size=11, color=COR_TEXTO_3)),
+            dict(text=f"<b>{perfil}</b>", x=0, y=-0.06, showarrow=False, font=dict(size=14, color=COR_TEXTO)),
         ],
     )
     return fig
 
 
-def legenda_alocacao(perfil):
-    linhas = []
-    for (classe, peso), cor in zip(PERFIS[perfil].items(), CORES_ALOCACAO):
-        linhas.append(
-            "<div style='display:flex;align-items:center;justify-content:space-between;"
-            f"padding:7px 0;border-bottom:1px solid {COR_BORDA};font-size:13px'>"
-            f"<span style='display:flex;align-items:center;gap:9px;color:{COR_TEXTO}'>"
-            f"<span style='width:10px;height:10px;border-radius:3px;background:{cor};display:inline-block'></span>"
-            f"{escape(classe)}</span>"
-            f"<span style='color:{COR_TEXTO};font-weight:600;font-variant-numeric:tabular-nums'>{peso}%</span></div>"
+def selecionar_classe(classe):
+    st.session_state["classe"] = classe
+
+
+def legenda_alocacao(perfil, selecionada):
+    """Legenda em botões: clicar numa classe mostra a cotação dela no gráfico."""
+    for i, (classe, peso) in enumerate(PERFIS[perfil].items()):
+        st.button(
+            f"{classe} **· {peso}%**",
+            key=f"classe_{i}",
+            type="primary" if classe == selecionada else "secondary",
+            on_click=selecionar_classe,
+            args=(classe,),
+            width="stretch",
         )
-    return "<div style='margin-top:18px'>" + "".join(linhas) + "</div>"
 
 
 MESES_PT = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
@@ -465,34 +568,43 @@ def ticks_mensais(indice, passo=2):
     return valores, textos
 
 
-def grafico_historico(serie):
+def grafico_historico(serie, cor, pontos, intradia):
+    formato = ",.0f" if pontos else ",.2f"
+    unidade = " pts" if pontos else ""
+    prefixo = "" if pontos else "R$ "
+    data_hover = "%H:%M" if intradia else "%d/%m/%Y"
     fig = go.Figure(
         go.Scatter(
             x=serie.index,
             y=serie.values,
             mode="lines",
-            line=dict(color=COR_DESTAQUE, width=2),
+            line=dict(color=cor, width=2),
             fill="tozeroy",
-            fillcolor="rgba(57,135,229,0.10)",
-            hovertemplate="%{x|%d/%m/%Y}  <b>%{y:,.0f} pts</b><extra></extra>",
-            name="Ibovespa",
+            fillcolor=hex_rgba(cor, 0.10),
+            hovertemplate=f"%{{x|{data_hover}}}  <b>{prefixo}%{{y:{formato}}}{unidade}</b><extra></extra>",
         )
     )
     minimo, maximo = float(serie.min()), float(serie.max())
-    folga = (maximo - minimo) * 0.08
-    marcas, rotulos = ticks_mensais(serie.index)
-    layout_base(fig, 330)
+    folga = (maximo - minimo) * 0.08 or maximo * 0.002
+    eixo_x = dict(
+        showgrid=False, showline=True, linecolor=COR_BORDA, color=COR_TEXTO_2,
+        showspikes=True, spikemode="across", spikecolor=COR_TEXTO_3, spikethickness=1, spikedash="dot",
+    )
+    if intradia:
+        eixo_x["tickformat"] = "%H:%M"
+    elif (serie.index[-1] - serie.index[0]).days > 60:
+        marcas, rotulos = ticks_mensais(serie.index, passo=2 if len(serie) > 150 else 1)
+        eixo_x.update(tickvals=marcas, ticktext=rotulos)
+    else:
+        eixo_x["tickformat"] = "%d/%m"
+    layout_base(fig, 300)
     fig.update_layout(
         hovermode="x",
         showlegend=False,
-        xaxis=dict(
-            showgrid=False, showline=True, linecolor=COR_BORDA, color=COR_TEXTO_2,
-            tickvals=marcas, ticktext=rotulos,
-            showspikes=True, spikemode="across", spikecolor=COR_TEXTO_3, spikethickness=1, spikedash="dot",
-        ),
+        xaxis=eixo_x,
         yaxis=dict(
             gridcolor=COR_BORDA, zeroline=False, color=COR_TEXTO_2, side="right",
-            tickformat=",.0f", range=[minimo - folga, maximo + folga],
+            tickformat=formato, range=[minimo - folga, maximo + folga],
         ),
     )
     return fig
@@ -608,30 +720,94 @@ if falhas:
             st.caption(falha)
 
 # ---------------------------------------------------------------------------
-# 2. Alocação dinâmica + 3. Histórico
+# 2. Alocação dinâmica (clicável) + 3. Cotação da classe selecionada
 # ---------------------------------------------------------------------------
-col_aloc, col_hist = st.columns([1, 1.7], gap="medium")
+if st.session_state.get("classe") not in CLASSES:
+    st.session_state["classe"] = CLASSE_PADRAO
+
+
+def ao_clicar_pizza():
+    """Clique numa fatia da pizza seleciona a classe correspondente."""
+    evento = st.session_state.get("pizza_alocacao")
+    try:
+        pontos = evento["selection"]["points"]
+    except (KeyError, TypeError):
+        return
+    if not pontos:
+        return
+    ponto = pontos[0]
+    dados = ponto.get("customdata") or [None]
+    classe = dados[0] if isinstance(dados, (list, tuple)) else None
+    if classe not in CLASSES:
+        classe = ponto.get("label")
+    if classe not in CLASSES:
+        indice = ponto.get("point_number", ponto.get("point_index"))
+        if isinstance(indice, int) and 0 <= indice < len(CLASSES):
+            classe = list(PERFIS[st.session_state.get("perfil_atual", "Moderado")].keys())[indice]
+    if classe in CLASSES:
+        st.session_state["classe"] = classe
+
+
+st.session_state["perfil_atual"] = perfil
+classe_sel = st.session_state["classe"]
+
+col_aloc, col_hist = st.columns([1.1, 1.6], gap="medium")
 
 with col_aloc:
     with st.container(border=True):
-        cabecalho_painel("Alocação Sugerida", f"Perfil {perfil}")
-        g1, g2 = st.columns([1, 1.05])
+        cabecalho_painel("Alocação Sugerida", f"Perfil {perfil} · clique numa classe")
+        g1, g2 = st.columns([1, 1.15], vertical_alignment="center")
         with g1:
-            st.plotly_chart(grafico_alocacao(perfil), width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(
+                grafico_alocacao(perfil, classe_sel),
+                width="stretch",
+                config={"displayModeBar": False},
+                key="pizza_alocacao",
+                on_select=ao_clicar_pizza,
+                selection_mode="points",
+            )
         with g2:
-            st.markdown(legenda_alocacao(perfil), unsafe_allow_html=True)
+            legenda_alocacao(perfil, classe_sel)
+
+
+@st.fragment(run_every=ATUALIZACAO_GRAFICO)
+def painel_cotacao(classe):
+    """Gráfico da classe selecionada; se atualiza sozinho a cada minuto."""
+    ativo = ATIVO_CLASSE[classe]
+    cor = CORES_ALOCACAO[CLASSES.index(classe)]
+    with st.container(border=True):
+        cabecalho_painel(f"{classe} · {ativo['nome']}", f"Atualiza a cada {ATUALIZACAO_GRAFICO}s")
+        periodo = st.segmented_control(
+            "Período", list(PERIODOS.keys()), default="1 ano", key="periodo_grafico",
+            label_visibility="collapsed",
+        ) or "1 ano"
+        historico = buscar_historico(ativo["ticker"], periodo)
+        if not historico["ok"]:
+            st.error(historico["erro"])
+            return
+        serie = historico["serie"]
+        intradia = PERIODOS[periodo]["intradia"]
+        ultimo, primeiro = float(serie.iloc[-1]), float(serie.iloc[0])
+        var_pct = (ultimo / primeiro - 1) * 100 if primeiro else None
+        preco = f"{fmt_num(ultimo, 0)} pts" if ativo["pontos"] else fmt_brl(ultimo)
+        quando = serie.index[-1].strftime("%H:%M de %d/%m/%Y" if intradia else "%d/%m/%Y")
+        st.markdown(
+            f"<div class='ativo-linha'><span class='ativo-preco'>{escape(preco)}</span>"
+            f"<span class='ativo-delta {classe_delta(var_pct)}'>{seta(var_pct)} {fmt_pct(var_pct)} no período</span>"
+            f"<span class='ativo-ref'>Última cotação: {quando} · Yahoo Finance (atraso de até 15 min)</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            grafico_historico(serie, cor, ativo["pontos"], intradia),
+            width="stretch",
+            config={"displayModeBar": False},
+        )
+        if historico.get("aviso"):
+            st.markdown(f"<div class='nota'>{escape(historico['aviso'])}</div>", unsafe_allow_html=True)
+
 
 with col_hist:
-    with st.container(border=True):
-        historico = buscar_historico_ibov()
-        if historico["ok"]:
-            serie = historico["serie"]
-            periodo = f"{serie.index[0].strftime('%d/%m/%Y')} a {serie.index[-1].strftime('%d/%m/%Y')}"
-            cabecalho_painel("Ibovespa · Últimos 12 Meses", periodo)
-            st.plotly_chart(grafico_historico(serie), width="stretch", config={"displayModeBar": False})
-        else:
-            cabecalho_painel("Ibovespa · Últimos 12 Meses")
-            st.error(historico["erro"])
+    painel_cotacao(classe_sel)
 
 # ---------------------------------------------------------------------------
 # 4. Radar de ações
